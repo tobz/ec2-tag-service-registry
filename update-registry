@@ -1,0 +1,103 @@
+#!/usr/bin/php
+<?php
+
+// Pull in the AWS SDK Phar and the EC2 client.
+require_once 'aws.phar';
+use Aws\Ec2\Ec2Client;
+
+class ServiceRegistry
+{
+    private function getClient($region = "us-east-1")
+    {
+        return Ec2Client::factory(array(
+            'region' => $region,
+            'default_cache_config' => 'apc'
+        ));
+    }
+
+    public function getRegions()
+    {
+        $regions = array();
+
+        // Get all the regions.
+        $regionData = $this->getClient()
+            ->describeRegions()
+            ->getAll();
+
+        // Pull out the region names and stick them into a list.
+        foreach($regionData['Regions'] as $region)
+        {
+            $regions[] = $region['RegionName'];
+        }
+
+        return $regions;
+    }
+
+    public function getServiceGroups()
+    {
+        $serviceGroups = array();
+
+        $regions = $this->getRegions();
+        foreach($regions as $region)
+        {
+            $instances = array();
+            $tags = array();
+
+            // Get all instances for this region.
+            $instances = $this->getClient($region)
+                ->describeInstances(array(
+                    'Filters' => array(
+                        array('Name' => 'tag-key', 'Values' => array('ServiceGroups'))
+                    )
+                ))
+                ->getAll();
+
+            // For each reservation, take every instance record the public IP, mapped by instance ID.  Also, find the value
+            // of the ServiceGroups tag if they have it (which they should be that's what we filtered for :) and record that
+            // mapped by instance ID as well.
+            foreach($instances['Reservations'] as $reservation)
+            {
+                foreach($reservation['Instances'] as $instance)
+                {
+                    $instances[$instance['InstanceId']] = $instance['PublicIpAddress'];
+                    foreach($instance['Tags'] as $tag)
+                    {
+                        if($tag['Key'] == 'ServiceGroups')
+                        {
+                            $tags[$instance['InstanceId']] = $tag['Value'];
+                        }
+                    }
+                }
+            }
+
+            // Go through all the properly-tagged instances we found and build the service groups.
+            foreach($tags as $instanceId => $serviceGroupsTag)
+            {
+                // Split up the tag if possible.
+                $services = explode(",", $serviceGroupsTag);
+
+                // For each service, add this instance's public IP to the given service group.
+                // Pay attention to carrying over any custom-defined ports.
+                foreach($services as $service)
+                {
+                    if(strpos($service, ':') === FALSE)
+                    {
+                        // No custom port defined, so just use the public IP.
+                        $serviceGroups[$service][] = $instances[$instanceId];
+                    }
+                    else
+                    {
+                        $servicePort = substr($service, (strpos($service, ':') + 1));
+                        $serviceName = substr($service, 0, -(strlen($servicePort) + 1));
+                        $serviceGroups[$serviceName][] = sprintf("%s:%s", $instances[$instanceId], $servicePort);
+                    }
+                }
+            }
+        }
+
+        return $serviceGroups;
+    }
+}
+
+$registry = new ServiceRegistry();
+var_dump($registry->getServiceGroups());
