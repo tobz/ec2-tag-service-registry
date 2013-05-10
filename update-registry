@@ -100,4 +100,4 @@ class ServiceRegistry
 }
 
 $registry = new ServiceRegistry();
-var_dump($registry->getServiceGroups());
+echo json_encode($registry->getServiceGroups());
